@@ -15,8 +15,8 @@ llm = AzureChatOpenAI(
     azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
     azure_deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT"),
     api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
-    api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-    temperature=0
+    api_key=os.getenv("AZURE_OPENAI_API_KEY")
+    # temperature=0
 )
 
 # --- SEMrush API Key ---

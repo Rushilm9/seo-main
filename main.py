@@ -59,6 +59,40 @@ def check_relevance(llm, keyword, title, snippet):
     result = llm.invoke(prompt)
     return result.content.strip()
 
+def get_keyword_data(keyword, match_type, display_limit):
+    base_url = "https://api.semrush.com/"
+    params = {
+        "type": match_type,
+        "key": SEMRUSH_API_KEY,
+        "phrase": keyword,
+        "database": "us",
+        "export_columns": "Ph,Nq,Kd,In",  # In is Intent
+        "display_limit": display_limit
+    }
+    response = requests.get(base_url, params=params)
+    results = []
+    if response.status_code == 200 and response.text.strip():
+        lines = response.text.strip().split("\n")
+        if len(lines) > 1:
+            for line in lines[1:]:
+                values = line.split(";")
+                if len(values) == 4:
+                    ph, nq, kd, intent = values
+                    results.append({
+                        "Keyword": ph,
+                        "Search Volume": nq if nq.isdigit() else "No result",
+                        "Keyword Difficulty Index": kd if kd.replace('.', '', 1).isdigit() else "No result",
+                        "Intent": intent
+                    })
+    if not results:
+        results.append({
+            "Keyword": keyword,
+            "Search Volume": "No result",
+            "Keyword Difficulty Index": "No result",
+            "Intent": "No result"
+        })
+    return results
+
 # --- Streamlit App ---
 
 st.set_page_config(page_title="SEO Keyword Toolkit", layout="wide")
@@ -111,6 +145,164 @@ with tab1:
                                file_name="keywords.txt",
                                mime="text/plain")
 
+    st.markdown("---")
+    st.subheader("🔍 Keyword Volume & Relevance Checker (SEMrush + Tavily)")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        uploaded_kw_file = st.file_uploader("Upload a .txt file with keywords (one per line)", type="txt", key="tab1_kw_upload")
+    with col2:
+        pasted_kw_text = st.text_area("Or paste keywords here (one per line):", height=150, key="tab1_kw_paste")
+
+    # Match type selection
+    match_type_option = st.selectbox(
+        "Select SEMrush Match Type",
+        options=["EXACT_MATCH", "BROAD_MATCH"],
+        format_func=lambda x: "Exact Match" if x == "EXACT_MATCH" else "Broad Match",
+        key="tab1_match_type"
+    )
+    if match_type_option == "EXACT_MATCH":
+        match_type = "phrase_this"
+        display_limit = 1
+    else:
+        match_type = "phrase_related"
+        display_limit = 10
+
+    # Collect keywords from either source
+    tab1_keywords = []
+    if pasted_kw_text.strip():
+        tab1_keywords = [kw.strip() for kw in pasted_kw_text.strip().splitlines() if kw.strip()]
+    elif uploaded_kw_file is not None:
+        tab1_keywords = uploaded_kw_file.read().decode("utf-8").splitlines()
+        tab1_keywords = [kw.strip() for kw in tab1_keywords if kw.strip()]
+
+    if tab1_keywords:
+        st.write(f"**Total Keywords Provided:** {len(tab1_keywords)}")
+
+        if st.button("Generate Keyword Analysis", key="tab1_generate_analysis"):
+            analysis_results = []
+            with st.spinner("Analyzing keywords with SEMrush and Tavily..."):
+                for kw in tab1_keywords:
+                    if match_type == "phrase_this":
+                        # Exact match: only check the main keyword
+                        semrush_data = get_keyword_data(kw, match_type, display_limit)
+                        if semrush_data and semrush_data[0]["Search Volume"] != "No result":
+                            try:
+                                volume = int(semrush_data[0]["Search Volume"])
+                            except:
+                                volume = 0
+                        else:
+                            volume = 0
+
+                        if volume >= 100:
+                            tavily_results = tavily_search(kw, num_results=10)
+                            if tavily_results:
+                                for res in tavily_results:
+                                    title = res.get("title", "")
+                                    url = res.get("url", "")
+                                    snippet = res.get("description", "")
+                                    relevance = check_relevance(llm, kw, title, snippet)
+                                    analysis_results.append({
+                                        "Keyword": kw,
+                                        "Search Volume (US)": str(volume),
+                                        "Title": title,
+                                        "URL": url,
+                                        "Snippet": snippet,
+                                        "Relevance": relevance
+                                    })
+                            else:
+                                analysis_results.append({
+                                    "Keyword": kw,
+                                    "Search Volume (US)": str(volume),
+                                    "Title": "",
+                                    "URL": "",
+                                    "Snippet": "",
+                                    "Relevance": "No Tavily results"
+                                })
+                        else:
+                            analysis_results.append({
+                                "Keyword": kw,
+                                "Search Volume (US)": str(volume) if volume > 0 else "No result",
+                                "Title": "",
+                                "URL": "",
+                                "Snippet": "",
+                                "Relevance": "Volume < 100 or No SEMrush result"
+                            })
+                    else:
+                        # Broad match: check up to 10 related keywords
+                        semrush_data_list = get_keyword_data(kw, match_type, display_limit)
+                        found_any = False
+                        for semrush_data in semrush_data_list:
+                            rel_kw = semrush_data["Keyword"]
+                            if semrush_data["Search Volume"] != "No result":
+                                try:
+                                    volume = int(semrush_data["Search Volume"])
+                                except:
+                                    volume = 0
+                            else:
+                                volume = 0
+
+                            if volume >= 100:
+                                found_any = True
+                                tavily_results = tavily_search(rel_kw, num_results=10)
+                                if tavily_results:
+                                    for res in tavily_results:
+                                        title = res.get("title", "")
+                                        url = res.get("url", "")
+                                        snippet = res.get("description", "")
+                                        relevance = check_relevance(llm, rel_kw, title, snippet)
+                                        analysis_results.append({
+                                            "Input Keyword": kw,
+                                            "Related Keyword": rel_kw,
+                                            "Search Volume (US)": str(volume),
+                                            "Title": title,
+                                            "URL": url,
+                                            "Snippet": snippet,
+                                            "Relevance": relevance
+                                        })
+                                else:
+                                    analysis_results.append({
+                                        "Input Keyword": kw,
+                                        "Related Keyword": rel_kw,
+                                        "Search Volume (US)": str(volume),
+                                        "Title": "",
+                                        "URL": "",
+                                        "Snippet": "",
+                                        "Relevance": "No Tavily results"
+                                    })
+                            else:
+                                analysis_results.append({
+                                    "Input Keyword": kw,
+                                    "Related Keyword": rel_kw,
+                                    "Search Volume (US)": str(volume) if volume > 0 else "No result",
+                                    "Title": "",
+                                    "URL": "",
+                                    "Snippet": "",
+                                    "Relevance": "Volume < 100 or No SEMrush result"
+                                })
+                        if not semrush_data_list:
+                            analysis_results.append({
+                                "Input Keyword": kw,
+                                "Related Keyword": "",
+                                "Search Volume (US)": "No result",
+                                "Title": "",
+                                "URL": "",
+                                "Snippet": "",
+                                "Relevance": "No SEMrush result"
+                            })
+
+            if analysis_results:
+                df_analysis = pd.DataFrame(analysis_results)
+                st.dataframe(df_analysis)
+                st.download_button(
+                    label="Download Analysis as CSV",
+                    data=df_analysis.to_csv(index=False).encode("utf-8"),
+                    file_name="keyword_analysis.csv",
+                    mime="text/csv"
+                )
+            else:
+                st.warning("No results found for any keyword.")
+
 # --- Tab 2: Keyword Volume, Difficulty & Intent Categorizer (SEMrush API) ---
 with tab2:
     st.header("Keyword Volume, Difficulty & Intent Categorizer (SEMrush API)")
@@ -135,42 +327,6 @@ with tab2:
         uploaded_file = st.file_uploader("Upload a .txt file", type="txt", key="semrush_upload_new")
     with col2:
         text_input = st.text_area("Or paste keywords here", height=200, key="semrush_paste_new")
-
-    # Function to get keyword data (volume, difficulty, intent)
-    def get_keyword_data(keyword, match_type, display_limit):
-        base_url = "https://api.semrush.com/"
-        params = {
-            "type": match_type,
-            "key": SEMRUSH_API_KEY,
-            "phrase": keyword,
-            "database": "us",
-            "export_columns": "Ph,Nq,Kd,In",  # In is Intent
-            "display_limit": display_limit
-        }
-        response = requests.get(base_url, params=params)
-        results = []
-        if response.status_code == 200 and response.text.strip():
-            lines = response.text.strip().split("\n")
-            if len(lines) > 1:
-                for line in lines[1:]:
-                    values = line.split(";")
-                    if len(values) == 4:
-                        ph, nq, kd, intent = values
-                        # Always store as string for Arrow compatibility
-                        results.append({
-                            "Keyword": ph,
-                            "Search Volume": nq if nq.isdigit() else "No result",
-                            "Keyword Difficulty Index": kd if kd.replace('.', '', 1).isdigit() else "No result",
-                            "Intent": intent
-                        })
-        if not results:
-            results.append({
-                "Keyword": keyword,
-                "Search Volume": "No result",
-                "Keyword Difficulty Index": "No result",
-                "Intent": "No result"
-            })
-        return results
 
     # Collect keywords from either source
     keywords = []
